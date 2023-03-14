@@ -1,0 +1,202 @@
+import {
+  IDexHelper,
+  ICache,
+  IBlockManager,
+  EventSubscriber,
+  IRequestWrapper,
+} from './index';
+import axios from 'axios';
+import { Address, LoggerConstructor, Token } from '../types';
+// import { Contract } from '@ethersproject/contracts';
+import { StaticJsonRpcProvider, Provider } from '@ethersproject/providers';
+import multiABIV2 from '../abi/multi-v2.json';
+import log4js from 'log4js';
+import Web3 from 'web3';
+import { Contract } from 'web3-eth-contract';
+import { generateConfig, ConfigHelper } from '../config';
+import { MultiWrapper } from '../lib/multi-wrapper';
+import { BlockHeader } from 'web3-eth';
+import { PromiseScheduler } from '../lib/promise-scheduler';
+
+// This is a dummy cache for testing purposes
+class DummyCache implements ICache {
+  async get(
+    dexKey: string,
+    network: number,
+    cacheKey: string,
+  ): Promise<string | null> {
+    return null;
+  }
+
+  async rawget(key: string): Promise<string | null> {
+    return null;
+  }
+
+  async rawdel(key: string): Promise<void> {
+    return;
+  }
+
+  async setex(
+    dexKey: string,
+    network: number,
+    cacheKey: string,
+    ttlSeconds: number,
+    value: string,
+  ): Promise<void> {
+    return;
+  }
+
+  async getAndCacheLocally(
+    dexKey: string,
+    network: number,
+    cacheKey: string,
+    ttlSeconds: number,
+  ): Promise<string | null> {
+    return null;
+  }
+
+  async setexAndCacheLocally(
+    dexKey: string,
+    network: number,
+    cacheKey: string,
+    ttlSeconds: number,
+    value: string,
+  ): Promise<void> {
+    return;
+  }
+
+  async hset(mapKey: string, key: string, value: string): Promise<void> {
+    return;
+  }
+
+  async hget(mapKey: string, key: string): Promise<string | null> {
+    return null;
+  }
+
+  async publish(channel: string, msg: string): Promise<void> {
+    return;
+  }
+
+  subscribe(
+    channel: string,
+    cb: (channel: string, msg: string) => void,
+  ): () => void {
+    return () => {};
+  }
+
+  addBatchHGet(
+    mapKey: string,
+    key: string,
+    cb: (result: string | null) => boolean,
+  ): void {}
+}
+
+class DummyRequestWrapper implements IRequestWrapper {
+  async get(
+    url: string,
+    timeout?: number,
+    headers?: { [key: string]: string | number },
+  ) {
+    const axiosResult = await axios({
+      method: 'get',
+      url,
+      timeout,
+      headers: {
+        'User-Agent': 'node.js',
+        ...headers,
+      },
+    });
+    return axiosResult.data;
+  }
+
+  async post(
+    url: string,
+    data: any,
+    timeout?: number,
+    headers?: { [key: string]: string | number },
+  ) {
+    const axiosResult = await axios({
+      method: 'post',
+      url,
+      data,
+      timeout,
+      headers: {
+        'User-Agent': 'node.js',
+        ...headers,
+      },
+    });
+    return axiosResult.data;
+  }
+}
+
+class DummyBlockManager implements IBlockManager {
+  subscribeToLogs(
+    subscriber: EventSubscriber,
+    contractAddress: Address | Address[],
+    afterBlockNumber: number,
+  ): void {
+    console.log(
+      `Subscribed to logs ${subscriber.name} ${contractAddress} ${afterBlockNumber}`,
+    );
+    subscriber.isTracking = () => true;
+  }
+
+  getLatestBlockNumber(): number {
+    return 42;
+  }
+
+  getActiveChainHead(): Readonly<BlockHeader> {
+    return {
+      number: 42,
+      hash: '0x42',
+    } as BlockHeader;
+  }
+}
+
+export class DummyDexHelper implements IDexHelper {
+  config: ConfigHelper;
+  cache: ICache;
+  httpRequest: IRequestWrapper;
+  provider: Provider;
+  multiContract: Contract;
+  multiWrapper: MultiWrapper;
+  promiseScheduler: PromiseScheduler;
+  blockManager: IBlockManager;
+  getLogger: LoggerConstructor;
+  web3Provider: Web3;
+  getTokenUSDPrice: (token: Token, amount: bigint) => Promise<number>;
+
+  constructor(network: number) {
+    this.config = new ConfigHelper(false, generateConfig(network), 'is');
+    this.cache = new DummyCache();
+    this.httpRequest = new DummyRequestWrapper();
+    this.provider = new StaticJsonRpcProvider(
+      this.config.data.privateHttpProvider,
+      network,
+    );
+    this.web3Provider = new Web3(this.config.data.privateHttpProvider);
+    this.multiContract = new this.web3Provider.eth.Contract(
+      multiABIV2 as any,
+      this.config.data.multicallV2Address,
+    );
+    this.blockManager = new DummyBlockManager();
+    this.getLogger = name => {
+      const logger = log4js.getLogger(name);
+      logger.level = 'debug';
+      return logger;
+    };
+    // For testing use only full parts like 1, 2, 3 ETH, not 0.1 ETH etc
+    this.getTokenUSDPrice = async (token, amount) =>
+      Number(amount / BigInt(10 ** token.decimals));
+    this.multiWrapper = new MultiWrapper(
+      this.multiContract,
+      this.getLogger(`MultiWrapper-${network}`),
+    );
+
+    this.promiseScheduler = new PromiseScheduler(
+      100,
+      5,
+      this.getLogger(`PromiseScheduler-${network}`),
+    );
+  }
+}
